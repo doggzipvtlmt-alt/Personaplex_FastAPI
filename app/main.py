@@ -1,58 +1,67 @@
+import asyncio
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from app.clients import KBClient, OpenAIClient, PersonaPlexClient
 from app.config import get_settings
-from app.models import AgentUrlResponse, HealthResponse, JobJsonResponse, ResponsePayload, TextAgentRequest
-from app.pipeline import VoicePipeline
+from app.services.llm import LLMService
+from app.services.stt import STTService
+from app.services.tts import TTSService
 from app.storage import JobStorage
+
+ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".webm", ".m4a"}
 
 settings = get_settings()
 storage = JobStorage(output_dir=settings.output_dir)
-personaplex_client = PersonaPlexClient(settings=settings)
 kb_client = KBClient(settings=settings)
 openai_client = OpenAIClient(settings=settings)
-pipeline = VoicePipeline(
-    settings=settings,
-    storage=storage,
-    personaplex_client=personaplex_client,
-    kb_client=kb_client,
-    openai_client=openai_client,
-)
+personaplex_client = PersonaPlexClient(settings=settings)
+stt_service = STTService(settings=settings)
+tts_service = TTSService(settings=settings)
+llm_service = LLMService(openai_client=openai_client, personaplex_client=personaplex_client)
 
-app = FastAPI(title="PersonaPlex Gateway", version="1.0.0")
+templates = Jinja2Templates(directory="templates")
+
+app = FastAPI(title=settings.app_name, version="2.0.0")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+if settings.environment.lower() == "production":
+    allow_origins = settings.allowed_origins
+else:
+    allow_origins = list(dict.fromkeys([*settings.allowed_origins, "http://localhost", "http://127.0.0.1"]))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    return HealthResponse(status="ok")
+@app.get("/health")
+async def health() -> dict[str, bool]:
+    return {"ok": True}
 
 
-@app.post("/agent/voice")
-async def agent_voice(
+@app.get("/")
+async def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.post("/api/voice")
+async def api_voice(
     file: UploadFile = File(...),
-    voice_prompt: str = Form(default="NATF2.pt"),
-    top_k: int = Form(default=5),
-    return_mode: str = Form(default="file"),
+    mode: str = Form(default="default"),
+    user_id: str | None = Form(default=None),
+    session_id: str | None = Form(default=None),
 ):
-    if return_mode not in {"file", "url"}:
-        raise HTTPException(status_code=400, detail="return_mode must be file or url")
-    if top_k < 1 or top_k > 20:
-        raise HTTPException(status_code=400, detail="top_k must be in range [1, 20]")
-
-    if file.content_type not in {"audio/wav", "audio/x-wav", "application/octet-stream"}:
-        raise HTTPException(status_code=400, detail="Only WAV uploads are supported")
+    _validate_upload(file)
 
     audio_bytes = await file.read()
     if not audio_bytes:
@@ -60,80 +69,130 @@ async def agent_voice(
     if len(audio_bytes) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="Uploaded file too large")
 
-    if not (audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE"):
-        raise HTTPException(status_code=400, detail="Uploaded file is not a valid WAV")
+    extension = Path(file.filename or "recording.webm").suffix.lower() or ".webm"
+    job_id = storage.create_job(
+        {
+            "status": "queued",
+            "mode": mode,
+            "user_id": user_id,
+            "session_id": session_id,
+            "filename": file.filename,
+        }
+    )
+
+    storage.update_job(job_id, status="processing")
+
+    audio_input_name = f"input{extension}"
+    audio_input_path = storage.save_bytes(job_id, audio_input_name, audio_bytes)
 
     try:
-        result = await pipeline.run_from_audio(
-            audio_bytes=audio_bytes,
-            voice_prompt=voice_prompt,
-            top_k=top_k,
-            input_filename=file.filename or "input.wav",
+        transcript = await stt_service.transcribe(audio_input_path)
+
+        kb_results = await kb_client.search(query=transcript, top_k=5)
+        citations = _extract_citations(kb_results)
+        kb_context = "\n\n".join(item.get("text", "") for item in kb_results if item.get("text"))
+
+        assistant_text = await llm_service.generate(transcript=transcript, context=kb_context)
+        output_extension = ".mp3" if settings.elevenlabs_api_key else ".wav"
+        output_path = storage.job_dir(job_id) / f"output{output_extension}"
+        final_audio_path = await tts_service.synthesize(text=assistant_text, output_path=output_path)
+
+        storage.save_text(job_id, "transcript.txt", transcript)
+        storage.save_text(job_id, "response.txt", assistant_text)
+        storage.save_json(
+            job_id,
+            "meta.json",
+            {
+                "job_id": job_id,
+                "transcript": transcript,
+                "assistant_text": assistant_text,
+                "citations": citations,
+                "audio_file": final_audio_path.name,
+            },
         )
+        storage.update_job(job_id, status="completed", audio_file=final_audio_path.name)
+
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        storage.update_job(job_id, status="failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Voice processing failed: {exc}") from exc
 
-    if return_mode == "file":
-        return Response(content=result.audio_bytes, media_type="audio/wav")
-
-    audio_url = f"/results/{result.job_id}/audio"
-    payload = AgentUrlResponse(
-        job_id=result.job_id,
-        audio_url=audio_url,
-        transcript=result.transcript,
-        kb_sources=result.citations,
-    )
-    return JSONResponse(content=payload.model_dump())
+    payload = {
+        "job_id": job_id,
+        "status": "completed",
+        "transcript": transcript,
+        "assistant_text": assistant_text,
+    }
+    return JSONResponse(content=payload)
 
 
-@app.post("/agent/text")
-async def agent_text(request: TextAgentRequest):
-    try:
-        result = await pipeline.run_from_text(
-            text=request.text,
-            voice_prompt=request.voice_prompt,
-            top_k=request.top_k,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    if request.return_mode == "file":
-        return Response(content=result.audio_bytes, media_type="audio/wav")
-
-    audio_url = f"/results/{result.job_id}/audio"
-    payload = AgentUrlResponse(
-        job_id=result.job_id,
-        audio_url=audio_url,
-        transcript=result.transcript,
-        kb_sources=result.citations,
-    )
-    return JSONResponse(content=payload.model_dump())
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str):
+    _ensure_job_exists(job_id)
+    return JSONResponse(content=storage.get_job(job_id))
 
 
-@app.get("/results/{job_id}/audio")
-async def get_audio(job_id: str):
-    audio_path = Path(settings.output_dir) / job_id / "output.wav"
+@app.get("/api/jobs/{job_id}/audio")
+async def get_job_audio(job_id: str):
+    _ensure_job_exists(job_id)
+    meta = storage.get_job(job_id)
+    audio_file = meta.get("audio_file", "output.wav")
+    audio_path = storage.job_dir(job_id) / audio_file
     if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Audio artifact not found")
-    return FileResponse(path=audio_path, media_type="audio/wav", filename="output.wav")
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    media_type = "audio/mpeg" if audio_path.suffix == ".mp3" else "audio/wav"
+    return FileResponse(path=audio_path, media_type=media_type, filename=audio_path.name)
 
 
-@app.get("/results/{job_id}/json", response_model=JobJsonResponse)
-async def get_json(job_id: str):
-    job_path = Path(settings.output_dir) / job_id
-    if not job_path.exists():
+@app.get("/api/jobs/{job_id}/meta")
+async def get_job_meta(job_id: str):
+    _ensure_job_exists(job_id)
+    meta_path = storage.job_dir(job_id) / "meta.json"
+    if not meta_path.exists():
+        raise HTTPException(status_code=404, detail="Metadata not ready")
+    return JSONResponse(content=storage.read_json(job_id, "meta.json"))
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def get_job_events(job_id: str):
+    _ensure_job_exists(job_id)
+
+    async def event_stream():
+        last_status = None
+        for _ in range(30):
+            status = storage.get_job(job_id).get("status", "unknown")
+            if status != last_status:
+                yield f"data: {status}\n\n"
+                last_status = status
+            if status in {"completed", "failed"}:
+                break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+def _validate_upload(file: UploadFile) -> None:
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio type. Allowed: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}",
+        )
+
+
+def _extract_citations(kb_results: list[dict]) -> list[str]:
+    citations: list[str] = []
+    for item in kb_results:
+        source = (
+            item.get("source")
+            or (item.get("metadata") or {}).get("source")
+            or (item.get("metadata") or {}).get("filename")
+        )
+        if source:
+            citations.append(str(source))
+    return list(dict.fromkeys(citations))
+
+
+def _ensure_job_exists(job_id: str) -> None:
+    if not storage.job_exists(job_id):
         raise HTTPException(status_code=404, detail="Job not found")
-
-    transcript_payload = storage.read_json(job_id, "transcript.json")
-    kb_payload = storage.read_json(job_id, "kb.json")
-    response_payload = storage.read_json(job_id, "response.json")
-    timings_payload = storage.read_json(job_id, "timings.json")
-
-    result = JobJsonResponse(
-        job_id=job_id,
-        transcript=transcript_payload.get("text", ""),
-        kb_results=kb_payload.get("normalized", []),
-        response=ResponsePayload(**response_payload),
-        timings_ms=timings_payload,
-    )
-    return JSONResponse(content=result.model_dump())

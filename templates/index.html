@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PersonaPlex Voice Assistant</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>PersonaPlex Voice Assistant</h1>
+      <p class="sub">Record your question, then wait for transcript + spoken answer.</p>
+
+      <section class="controls">
+        <button id="recordBtn">🎙️ Start Recording</button>
+        <button id="stopBtn" disabled>⏹ Stop</button>
+      </section>
+
+      <section class="status">
+        <h3>Status</h3>
+        <p id="statusText">Idle</p>
+      </section>
+
+      <section>
+        <h3>Transcript</h3>
+        <pre id="transcript">-</pre>
+      </section>
+
+      <section>
+        <h3>Assistant Response</h3>
+        <pre id="assistantText">-</pre>
+      </section>
+
+      <section>
+        <h3>Audio</h3>
+        <audio id="player" controls></audio>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
