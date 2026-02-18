@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 from openai import OpenAI
+from openai import OpenAIError
 
 from app.config import Settings
 
@@ -81,7 +82,11 @@ class OpenAIClient:
     SYSTEM_PROMPT = "You are a concise and helpful assistant."
 
     def __init__(self, settings: Settings):
-        self.client = OpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        api_key = (settings.openai_api_key or "").strip()
+        if not api_key or api_key in {"your_key_here", "your_key*here"}:
+            self.client = None
+        else:
+            self.client = OpenAI(api_key=api_key)
         self.model = settings.openai_model
 
     def generate_answer(self, transcript: str, context: str = "") -> str:
@@ -93,12 +98,15 @@ class OpenAIClient:
             messages.append({"role": "assistant", "content": f"Context:\n{context}"})
         messages.append({"role": "user", "content": transcript})
 
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.3,
-        )
-        return (completion.choices[0].message.content or "").strip()
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.3,
+            )
+            return (completion.choices[0].message.content or "").strip()
+        except OpenAIError:
+            return ""
 
 
 def normalize_kb_items(raw_kb: Any) -> list[dict[str, Any]]:
