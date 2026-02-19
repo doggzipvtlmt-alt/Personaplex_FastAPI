@@ -1,5 +1,9 @@
 import asyncio
 from pathlib import Path
+from app.kb import keyword_search
+from fastapi import Query
+import httpx
+from fastapi import Query
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +22,7 @@ ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".webm", ".m4a"}
 
 settings = get_settings()
 storage = JobStorage(output_dir=settings.output_dir)
-kb_client = KBClient(settings=settings)
+#kb_client = KBClient(settings=settings)
 openai_client = OpenAIClient(settings=settings)
 personaplex_client = PersonaPlexClient(settings=settings)
 stt_service = STTService(settings=settings)
@@ -48,10 +52,36 @@ app.add_middleware(
 async def health() -> dict[str, bool]:
     return {"ok": True}
 
+@app.get("/kb/search")
+def kb_search(q: str = Query(...), k: int = 3):
+    results = keyword_search(q, k=k)
+
+    # keep response light
+    formatted = [
+        {
+            "id": r["id"],
+            "preview": r["text"][:800],   # first 800 chars only
+        }
+        for r in results
+    ]
+
+    return {"query": q, "k": k, "results_count": len(results), "results": formatted}
+
 
 @app.get("/")
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/debug/kb")
+def debug_kb(q: str = Query(...), k: int = 3):
+    # Local repo markdown search
+    results = keyword_search(q, k=k)
+    return {
+        "query": q,
+        "k": k,
+        "results_count": len(results),
+        "results": [{"id": r["id"], "preview": r["text"][:500]} for r in results],
+    }
 
 
 @app.post("/api/voice")
@@ -88,9 +118,15 @@ async def api_voice(
     try:
         transcript = await stt_service.transcribe(audio_input_path)
 
-        kb_results = await kb_client.search(query=transcript, top_k=5)
-        citations = _extract_citations(kb_results)
-        kb_context = "\n\n".join(item.get("text", "") for item in kb_results if item.get("text"))
+        # Use local markdown KB instead of external KB client
+        kb_results = keyword_search(transcript, k=5)
+        
+        citations = [r["id"] for r in kb_results]
+        
+        kb_context = "\n\n".join(
+            f"## {r['id']}\n{r['text'][:1500]}"
+            for r in kb_results
+        )
 
         assistant_text = await llm_service.generate(transcript=transcript, context=kb_context)
         output_extension = ".mp3" if settings.elevenlabs_api_key else ".wav"
@@ -196,3 +232,31 @@ def _extract_citations(kb_results: list[dict]) -> list[str]:
 def _ensure_job_exists(job_id: str) -> None:
     if not storage.job_exists(job_id):
         raise HTTPException(status_code=404, detail="Job not found")
+
+@app.get("/debug/personaplex")
+async def debug_personaplex():
+    url = settings.personaplex_url.rstrip("/") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
+        return {
+            "ok": True,
+            "personaplex_health_url": url,
+            "status": r.status_code,
+            "body": r.json()
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"PersonaPlex not reachable: {exc}"
+        )
+
+@app.get("/debug/kb")
+def debug_kb(q: str = Query(...), k: int = 3):
+    results = keyword_search(q, k=k)
+    return {
+        "query": q,
+        "k": k,
+        "results_count": len(results),
+        "results": results,
+    }
