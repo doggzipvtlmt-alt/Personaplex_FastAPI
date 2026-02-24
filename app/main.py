@@ -1,17 +1,15 @@
 import asyncio
 from pathlib import Path
-from app.kb import keyword_search
-from fastapi import Query
+from app.kb import search_kb
 import httpx
-from fastapi import Query
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.clients import KBClient, OpenAIClient, PersonaPlexClient
+from app.clients import OpenAIClient, PersonaPlexClient
 from app.config import get_settings
 from app.services.llm import LLMService
 from app.services.stt import STTService
@@ -54,7 +52,7 @@ async def health() -> dict[str, bool]:
 
 @app.get("/kb/search")
 def kb_search(q: str = Query(...), k: int = 3):
-    results = keyword_search(q, k=k)
+    results = search_kb(q, k=k)
 
     # keep response light
     formatted = [
@@ -75,7 +73,7 @@ async def home(request: Request):
 @app.get("/debug/kb")
 def debug_kb(q: str = Query(...), k: int = 3):
     # Local repo markdown search
-    results = keyword_search(q, k=k)
+    results = search_kb(q, k=k)
     return {
         "query": q,
         "k": k,
@@ -119,7 +117,7 @@ async def api_voice(
         transcript = await stt_service.transcribe(audio_input_path)
 
         # Use local markdown KB instead of external KB client
-        kb_results = keyword_search(transcript, k=5)
+        kb_results = search_kb(transcript, k=5)
         
         citations = [r["id"] for r in kb_results]
         
@@ -253,7 +251,7 @@ async def debug_personaplex():
 
 @app.get("/debug/kb")
 def debug_kb(q: str = Query(...), k: int = 3):
-    results = keyword_search(q, k=k)
+    results = search_kb(q, k=k)
     return {
         "query": q,
         "k": k,

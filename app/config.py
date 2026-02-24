@@ -19,6 +19,11 @@ class Settings(BaseSettings):
 
     personaplex_base_url: str | None = Field(default=None, alias="PERSONAPLEX_BASE_URL")
 
+    pinecone_api_key: str | None = Field(default=None, alias="PINECONE_API_KEY")
+    pinecone_index_name: str | None = Field(default=None, alias="PINECONE_INDEX_NAME")
+    pinecone_namespace: str | None = Field(default=None, alias="PINECONE_NAMESPACE")
+    embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
+
     request_timeout_seconds: float = Field(default=60.0, alias="REQUEST_TIMEOUT_SECONDS")
     output_dir: str = Field(default="/tmp/personaplex_outputs", alias="OUTPUT_DIR")
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
