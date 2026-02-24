@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from app.routes.kb import router as kb_router
 
 from app.clients import KBClient, OpenAIClient, PersonaPlexClient
 from app.config import get_settings
@@ -47,6 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(kb_router)
 
 @app.get("/health")
 async def health() -> dict[str, bool]:
