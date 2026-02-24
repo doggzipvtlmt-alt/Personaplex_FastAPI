@@ -8,3 +8,4 @@ openai==1.57.2
 gunicorn==22.0.0
 jinja2==3.1.5
 aiofiles==24.1.0
+pinecone-client>=3.0.0
