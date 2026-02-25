@@ -3,7 +3,7 @@ import httpx
 
 class PersonaPlexHTTPClient:
     def __init__(self):
-        self.base_url = os.getenv("PERSONAPLEX_URL")
+        self.base_url = os.getenv("https://deds0k3ekp5j3d-8000.proxy.runpod.net/")
         if not self.base_url:
             raise RuntimeError("Missing PERSONAPLEX_URL env var")
 
