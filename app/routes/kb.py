@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 
 from app.clients.pinecone_client import PineconeClient
-from app.services.embedding import embed_text
+from app.services.embeddings import embed_text
 
 router = APIRouter(prefix="/kb", tags=["knowledge-base"])
 
