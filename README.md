@@ -22,6 +22,10 @@ A production-friendly FastAPI web app that records audio in the browser, runs ST
 - `KB_BASE_URL` (optional)
 - `KB_API_KEY` (optional)
 - `PERSONAPLEX_BASE_URL` (optional)
+- `PINECONE_API_KEY` (optional, enables semantic KB search)
+- `PINECONE_INDEX_NAME` (optional, enables semantic KB search)
+- `PINECONE_NAMESPACE` (optional)
+- `EMBEDDING_MODEL` (optional, default `text-embedding-3-small`)
 - `ALLOWED_ORIGINS` (optional list)
 - `OUTPUT_DIR` (optional, default `/tmp/personaplex_outputs`)
 
@@ -41,7 +45,7 @@ Open: <http://localhost:8000>
 - **Build command**: `pip install -r requirements.txt`
 - **Start command**: `gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT`
 
-Set env vars in Render dashboard (only secrets you need).
+Set env vars in Render dashboard (only secrets you need). If Pinecone variables are not provided, the gateway automatically falls back to local markdown keyword search so PersonaPlex/STT/TTS flow keeps working.
 
 ## Minimal validation
 
